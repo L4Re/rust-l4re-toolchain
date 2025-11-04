@@ -1,0 +1,2476 @@
+diff --git a/compiler/rustc_codegen_ssa/messages.ftl b/compiler/rustc_codegen_ssa/messages.ftl
+index 44b9941691a..396cf800b6e 100644
+--- a/compiler/rustc_codegen_ssa/messages.ftl
++++ b/compiler/rustc_codegen_ssa/messages.ftl
+@@ -1,5 +1,3 @@
+-codegen_ssa_L4Bender_exporting_symbols_unimplemented = exporting symbols not implemented yet for L4Bender
+-
+ codegen_ssa_aarch64_softfloat_neon = enabling the `neon` target feature on the current target is unsound due to ABI issues
+ 
+ codegen_ssa_add_native_library = failed to add native library {$library_path}: {$error}
+diff --git a/compiler/rustc_codegen_ssa/src/back/linker.rs b/compiler/rustc_codegen_ssa/src/back/linker.rs
+index df1e91b12f9..7b4a6e4de77 100644
+--- a/compiler/rustc_codegen_ssa/src/back/linker.rs
++++ b/compiler/rustc_codegen_ssa/src/back/linker.rs
+@@ -134,9 +134,6 @@ pub(crate) fn get_linker<'a>(
+     // to the linker args construction.
+     assert!(cmd.get_args().is_empty() || sess.target.vendor == "uwp");
+     match flavor {
+-        LinkerFlavor::Unix(Cc::No) if sess.target.os == "l4re" => {
+-            Box::new(L4Bender::new(cmd, sess)) as Box<dyn Linker>
+-        }
+         LinkerFlavor::Unix(Cc::No) if sess.target.os == "aix" => {
+             Box::new(AixLinker::new(cmd, sess)) as Box<dyn Linker>
+         }
+@@ -276,7 +273,6 @@ pub(crate) fn link_or_cc_arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+     MsvcLinker<'_>
+     EmLinker<'_>
+     WasmLd<'_>
+-    L4Bender<'_>
+     AixLinker<'_>
+     LlbcLinker<'_>
+     PtxLinker<'_>
+@@ -682,13 +678,14 @@ fn gc_sections(&mut self, keep_metadata: bool) {
+         // eliminate the metadata. If we're building an executable, however,
+         // --gc-sections drops the size of hello world from 1.8MB to 597K, a 67%
+         // reduction.
+-        } else if (self.is_gnu || self.sess.target.is_like_wasm) && !keep_metadata {
++        } else if (self.is_gnu || self.sess.target.is_like_wasm || self.sess.target.os == "l4re")
++            && !keep_metadata {
+             self.link_arg("--gc-sections");
+         }
+     }
+ 
+     fn optimize(&mut self) {
+-        if !self.is_gnu && !self.sess.target.is_like_wasm {
++        if !self.is_gnu && !self.sess.target.is_like_wasm && self.sess.target.os != "l4re" {
+             return;
+         }
+ 
+@@ -1490,127 +1487,6 @@ fn push_linker_plugin_lto_args(&mut self) {
+     }
+ }
+ 
+-/// Linker shepherd script for L4Re (Fiasco)
+-struct L4Bender<'a> {
+-    cmd: Command,
+-    sess: &'a Session,
+-    hinted_static: bool,
+-}
+-
+-impl<'a> Linker for L4Bender<'a> {
+-    fn cmd(&mut self) -> &mut Command {
+-        &mut self.cmd
+-    }
+-
+-    fn set_output_kind(
+-        &mut self,
+-        _output_kind: LinkOutputKind,
+-        _crate_type: CrateType,
+-        _out_filename: &Path,
+-    ) {
+-    }
+-
+-    fn link_staticlib_by_name(&mut self, name: &str, _verbatim: bool, whole_archive: bool) {
+-        self.hint_static();
+-        if !whole_archive {
+-            self.link_arg(format!("-PC{name}"));
+-        } else {
+-            self.link_arg("--whole-archive")
+-                .link_or_cc_arg(format!("-l{name}"))
+-                .link_arg("--no-whole-archive");
+-        }
+-    }
+-
+-    fn link_staticlib_by_path(&mut self, path: &Path, whole_archive: bool) {
+-        self.hint_static();
+-        if !whole_archive {
+-            self.link_or_cc_arg(path);
+-        } else {
+-            self.link_arg("--whole-archive").link_or_cc_arg(path).link_arg("--no-whole-archive");
+-        }
+-    }
+-
+-    fn full_relro(&mut self) {
+-        self.link_args(&["-z", "relro", "-z", "now"]);
+-    }
+-
+-    fn partial_relro(&mut self) {
+-        self.link_args(&["-z", "relro"]);
+-    }
+-
+-    fn no_relro(&mut self) {
+-        self.link_args(&["-z", "norelro"]);
+-    }
+-
+-    fn gc_sections(&mut self, keep_metadata: bool) {
+-        if !keep_metadata {
+-            self.link_arg("--gc-sections");
+-        }
+-    }
+-
+-    fn optimize(&mut self) {
+-        // GNU-style linkers support optimization with -O. GNU ld doesn't
+-        // need a numeric argument, but other linkers do.
+-        if self.sess.opts.optimize == config::OptLevel::More
+-            || self.sess.opts.optimize == config::OptLevel::Aggressive
+-        {
+-            self.link_arg("-O1");
+-        }
+-    }
+-
+-    fn pgo_gen(&mut self) {}
+-
+-    fn debuginfo(&mut self, strip: Strip, _: &[PathBuf]) {
+-        match strip {
+-            Strip::None => {}
+-            Strip::Debuginfo => {
+-                self.link_arg("--strip-debug");
+-            }
+-            Strip::Symbols => {
+-                self.link_arg("--strip-all");
+-            }
+-        }
+-    }
+-
+-    fn no_default_libraries(&mut self) {
+-        self.cc_arg("-nostdlib");
+-    }
+-
+-    fn export_symbols(&mut self, _: &Path, _: CrateType, _: &[(String, SymbolExportKind)]) {
+-        // ToDo, not implemented, copy from GCC
+-        self.sess.dcx().emit_warn(errors::L4BenderExportingSymbolsUnimplemented);
+-    }
+-
+-    fn subsystem(&mut self, subsystem: &str) {
+-        self.link_arg(&format!("--subsystem {subsystem}"));
+-    }
+-
+-    fn reset_per_library_state(&mut self) {
+-        self.hint_static(); // Reset to default before returning the composed command line.
+-    }
+-
+-    fn linker_plugin_lto(&mut self) {}
+-
+-    fn control_flow_guard(&mut self) {}
+-
+-    fn ehcont_guard(&mut self) {}
+-
+-    fn no_crt_objects(&mut self) {}
+-}
+-
+-impl<'a> L4Bender<'a> {
+-    fn new(cmd: Command, sess: &'a Session) -> L4Bender<'a> {
+-        L4Bender { cmd, sess, hinted_static: false }
+-    }
+-
+-    fn hint_static(&mut self) {
+-        if !self.hinted_static {
+-            self.link_or_cc_arg("-static");
+-            self.hinted_static = true;
+-        }
+-    }
+-}
+-
+ /// Linker for AIX.
+ struct AixLinker<'a> {
+     cmd: Command,
+diff --git a/compiler/rustc_codegen_ssa/src/errors.rs b/compiler/rustc_codegen_ssa/src/errors.rs
+index fb5a8205140..10d7fe50723 100644
+--- a/compiler/rustc_codegen_ssa/src/errors.rs
++++ b/compiler/rustc_codegen_ssa/src/errors.rs
+@@ -117,10 +117,6 @@ pub(crate) struct SymbolFileWriteFailure {
+ #[diag(codegen_ssa_linker_unsupported_modifier)]
+ pub(crate) struct LinkerUnsupportedModifier;
+ 
+-#[derive(Diagnostic)]
+-#[diag(codegen_ssa_L4Bender_exporting_symbols_unimplemented)]
+-pub(crate) struct L4BenderExportingSymbolsUnimplemented;
+-
+ #[derive(Diagnostic)]
+ #[diag(codegen_ssa_no_natvis_directory)]
+ pub(crate) struct NoNatvisDirectory {
+diff --git a/compiler/rustc_target/src/spec/base/l4re.rs b/compiler/rustc_target/src/spec/base/l4re.rs
+index 072a6a1001b..ebbd9277b49 100644
+--- a/compiler/rustc_target/src/spec/base/l4re.rs
++++ b/compiler/rustc_target/src/spec/base/l4re.rs
+@@ -1,14 +1,61 @@
+-use crate::spec::{Cc, LinkerFlavor, PanicStrategy, RelocModel, TargetOptions, cvs};
++use crate::spec::{add_link_args, crt_objects, cvs, Cc, LinkerFlavor, LinkOutputKind, LinkSelfContainedDefault, LinkSelfContainedComponents, PanicStrategy, TargetOptions};
+ 
+ pub(crate) fn opts() -> TargetOptions {
++    // add ld- and cc-style args
++    macro_rules! prepare_args {
++        ($($val:expr),+) => {{
++            let ld_args = &[$($val),+];
++            let cc_args = &[$(concat!("-Wl,", $val)),+];
++
++            let mut ret = TargetOptions::link_args(LinkerFlavor::Unix(Cc::No), ld_args);
++            add_link_args(&mut ret, LinkerFlavor::Unix(Cc::Yes), cc_args);
++            ret
++        }};
++    }
++
++    let pre_link_args = prepare_args!(
++        "-nostdlib",
++        "-dynamic-linker=rom/libld-l4.so"
++    );
++
++    let late_link_args = prepare_args!(
++        "-lc",
++        "-lgcc_eh"
++    );
++
++    let pre_link_objects_self_contained = crt_objects::new(&[
++        (LinkOutputKind::StaticNoPicExe, &["crt1.o", "crti.o", "crtbeginT.o"]),
++        (LinkOutputKind::StaticPicExe, &["crt1.p.o", "crti.o", "crtbegin.o"]),
++        (LinkOutputKind::DynamicNoPicExe, &["crt1.o", "crti.o", "crtbegin.o"]),
++        (LinkOutputKind::DynamicPicExe, &["crt1.s.o", "crti.o", "crtbeginS.o"]),
++        (LinkOutputKind::DynamicDylib, &["crti.s.o", "crtbeginS.o"]),
++        (LinkOutputKind::StaticDylib, &["crti.s.o", "crtbeginS.o"]),
++    ]);
++
++    let post_link_objects_self_contained = crt_objects::new(&[
++        (LinkOutputKind::StaticNoPicExe, &["crtendT.o", "crtn.o"]),
++        (LinkOutputKind::StaticPicExe, &["crtend.o", "crtn.o"]),
++        (LinkOutputKind::DynamicNoPicExe, &["crtend.o", "crtn.o"]),
++        (LinkOutputKind::DynamicPicExe, &["crtendS.o", "crtn.o"]),
++        (LinkOutputKind::DynamicDylib, &["crtendS.o", "crtn.s.o"]),
++        (LinkOutputKind::StaticDylib, &["crtendS.o", "crtn.s.o"]),
++    ]);
++
+     TargetOptions {
+         os: "l4re".into(),
+         env: "uclibc".into(),
+-        linker_flavor: LinkerFlavor::Unix(Cc::No),
+         panic_strategy: PanicStrategy::Abort,
+-        linker: Some("l4-bender".into()),
++        linker_flavor: LinkerFlavor::Unix(Cc::No),
+         families: cvs!["unix"],
+-        relocation_model: RelocModel::Static,
++        // has_thread_local: true,
++        // position_independent_executables: true,
++        // static_position_independent_executables: true,
++        // tls_model:
++        pre_link_args,
++        late_link_args,
++        pre_link_objects_self_contained,
++        post_link_objects_self_contained,
++        link_self_contained: LinkSelfContainedDefault::WithComponents(LinkSelfContainedComponents::LIBC | LinkSelfContainedComponents::CRT_OBJECTS),
+         ..Default::default()
+     }
+ }
+diff --git a/compiler/rustc_target/src/spec/mod.rs b/compiler/rustc_target/src/spec/mod.rs
+index c53d92bee9d..8f606d8f70a 100644
+--- a/compiler/rustc_target/src/spec/mod.rs
++++ b/compiler/rustc_target/src/spec/mod.rs
+@@ -2026,6 +2026,9 @@ fn $module() {
+ 
+     ("avr-none", avr_none),
+ 
++    ("aarch64-unknown-l4re-uclibc", aarch64_unknown_l4re_uclibc),
++    ("armv7-unknown-l4re-uclibceabi", armv7_unknown_l4re_uclibceabi),
++    ("armv7-unknown-l4re-uclibceabihf", armv7_unknown_l4re_uclibceabihf),
+     ("x86_64-unknown-l4re-uclibc", x86_64_unknown_l4re_uclibc),
+ 
+     ("aarch64-unknown-redox", aarch64_unknown_redox),
+diff --git a/compiler/rustc_target/src/spec/targets/aarch64_unknown_l4re_uclibc.rs b/compiler/rustc_target/src/spec/targets/aarch64_unknown_l4re_uclibc.rs
+new file mode 100644
+index 00000000000..8e744c60493
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/aarch64_unknown_l4re_uclibc.rs
+@@ -0,0 +1,28 @@
++use crate::spec::{base, Cc, LinkerFlavor, Target, TargetOptions};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::l4re::opts();
++
++    let extra_link_args = &["-zmax-page-size=0x1000","-zcommon-page-size=0x1000"];
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::Yes), extra_link_args);
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::No), extra_link_args);
++
++    Target {
++        llvm_target: "aarch64-unknown-l4re-uclibc".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("Arm64 L4Re".into()),
++            tier: Some(3),
++            host_tools: Some(false),
++            std: Some(true),
++        },
++        pointer_width: 64,
++        data_layout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32".into(),
++        arch: "aarch64".into(),
++        options: TargetOptions {
++            features: "+v8a".into(),
++            mcount: "__mcount".into(),
++            max_atomic_width: Some(128),
++            ..base
++        }
++    }
++}
+diff --git a/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabi.rs b/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabi.rs
+new file mode 100644
+index 00000000000..62d7e95fe4d
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabi.rs
+@@ -0,0 +1,30 @@
++use crate::spec::{base, Cc, FloatAbi, LinkerFlavor, Target, TargetOptions};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::l4re::opts();
++
++    let extra_link_args = &["-zmax-page-size=0x1000","-zcommon-page-size=0x1000"];
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::Yes), extra_link_args);
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::No), extra_link_args);
++
++    Target {
++        llvm_target: "armv7-unknown-l4re-uclibc".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("Armv7-A L4Re, softfloat".into()),
++            tier: Some(3),
++            host_tools: Some(false),
++            std: Some(true),
++        },
++        pointer_width: 32,
++        data_layout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64".into(),
++        arch: "arm".into(),
++        options: TargetOptions {
++            abi: "eabi".into(),
++            llvm_floatabi: Some(FloatAbi::Soft),
++            features: "+v7,+thumb2,+soft-float,-neon".into(),
++            max_atomic_width: Some(64),
++            mcount: "__mcount".into(),
++            ..base
++        }
++    }
++}
+diff --git a/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabihf.rs b/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabihf.rs
+new file mode 100644
+index 00000000000..e2c953631c0
+--- /dev/null
++++ b/compiler/rustc_target/src/spec/targets/armv7_unknown_l4re_uclibceabihf.rs
+@@ -0,0 +1,30 @@
++use crate::spec::{base, Cc, FloatAbi, LinkerFlavor, Target, TargetOptions};
++
++pub(crate) fn target() -> Target {
++    let mut base = base::l4re::opts();
++
++    let extra_link_args = &["-zmax-page-size=0x1000","-zcommon-page-size=0x1000"];
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::Yes), extra_link_args);
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::No), extra_link_args);
++
++    Target {
++        llvm_target: "armv7-unknown-l4re-uclibc".into(),
++        metadata: crate::spec::TargetMetadata {
++            description: Some("Armv7-A L4Re".into()),
++            tier: Some(3),
++            host_tools: Some(false),
++            std: Some(true),
++        },
++        pointer_width: 32,
++        data_layout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64".into(),
++        arch: "arm".into(),
++        options: TargetOptions {
++            abi: "eabihf".into(),
++            llvm_floatabi: Some(FloatAbi::Hard),
++            features: "+v7,+vfp3,-d32,+thumb2,-neon".into(),
++            max_atomic_width: Some(64),
++            mcount: "__mcount".into(),
++            ..base
++        }
++    }
++}
+diff --git a/compiler/rustc_target/src/spec/targets/x86_64_unknown_l4re_uclibc.rs b/compiler/rustc_target/src/spec/targets/x86_64_unknown_l4re_uclibc.rs
+index 4107249dcf1..2a954593adb 100644
+--- a/compiler/rustc_target/src/spec/targets/x86_64_unknown_l4re_uclibc.rs
++++ b/compiler/rustc_target/src/spec/targets/x86_64_unknown_l4re_uclibc.rs
+@@ -1,11 +1,13 @@
+-use crate::spec::{PanicStrategy, Target, TargetMetadata, base};
++use crate::spec::{base, Cc, LinkerFlavor, Target, TargetMetadata};
+ 
+ pub(crate) fn target() -> Target {
+     let mut base = base::l4re::opts();
+     base.cpu = "x86-64".into();
+     base.plt_by_default = false;
+     base.max_atomic_width = Some(64);
+-    base.panic_strategy = PanicStrategy::Abort;
++    let extra_link_args = &["-zmax-page-size=0x1000","-zcommon-page-size=0x1000"];
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::Yes), extra_link_args);
++    base.add_pre_link_args(LinkerFlavor::Unix(Cc::No), extra_link_args);
+ 
+     Target {
+         llvm_target: "x86_64-unknown-l4re-gnu".into(),
+diff --git a/library/Cargo.lock b/library/Cargo.lock
+index 8b860f69492..f83642267fe 100644
+--- a/library/Cargo.lock
++++ b/library/Cargo.lock
+@@ -49,9 +49,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "cfg-if"
+-version = "1.0.1"
++version = "1.0.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9555578bc9e57714c812a1f84e4fc5b4d21fcb063490c624de019f7464c91268"
++checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
+ dependencies = [
+  "rustc-std-workspace-core",
+ ]
+@@ -78,9 +78,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "dlmalloc"
+-version = "0.2.10"
++version = "0.2.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fa3a2dbee57b69fbb5dbe852fa9c0925697fb0c7fbcb1593e90e5ffaedf13d51"
++checksum = "06cdfe340b16dd990c54cce79743613fa09fbb16774f33a77c9fd196f8f3fa30"
+ dependencies = [
+  "cfg-if",
+  "libc",
+@@ -110,9 +110,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "gimli"
+-version = "0.32.0"
++version = "0.32.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "93563d740bc9ef04104f9ed6f86f1e3275c2cdafb95664e26584b9ca807a8ffe"
++checksum = "cc6298e594375a7fead9efd5568f0a46e6a154fb6a9bdcbe3c06946ffd81a5f6"
+ dependencies = [
+  "rustc-std-workspace-alloc",
+  "rustc-std-workspace-core",
+@@ -140,9 +140,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.175"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
++version = "0.2.177"
+ dependencies = [
+  "rustc-std-workspace-core",
+ ]
+@@ -399,13 +397,19 @@ dependencies = [
+  "rustc-std-workspace-core",
+ ]
+ 
++[[package]]
++name = "windows-link"
++version = "0.1.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
++
+ [[package]]
+ name = "windows-sys"
+-version = "0.59.0"
++version = "0.60.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
++checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+ dependencies = [
+- "windows-targets 0.52.6",
++ "windows-targets 0.53.3",
+ ]
+ 
+ [[package]]
+@@ -414,10 +418,11 @@ version = "0.0.0"
+ 
+ [[package]]
+ name = "windows-targets"
+-version = "0.52.6"
++version = "0.53.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
++checksum = "d5fe6031c4041849d7c496a8ded650796e7b6ecc19df1a431c1a363342e5dc91"
+ dependencies = [
++ "windows-link",
+  "windows_aarch64_gnullvm",
+  "windows_aarch64_msvc",
+  "windows_i686_gnu",
+@@ -430,48 +435,48 @@ dependencies = [
+ 
+ [[package]]
+ name = "windows_aarch64_gnullvm"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
++checksum = "86b8d5f90ddd19cb4a147a5fa63ca848db3df085e25fee3cc10b39b6eebae764"
+ 
+ [[package]]
+ name = "windows_aarch64_msvc"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
++checksum = "c7651a1f62a11b8cbd5e0d42526e55f2c99886c77e007179efff86c2b137e66c"
+ 
+ [[package]]
+ name = "windows_i686_gnu"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
++checksum = "c1dc67659d35f387f5f6c479dc4e28f1d4bb90ddd1a5d3da2e5d97b42d6272c3"
+ 
+ [[package]]
+ name = "windows_i686_gnullvm"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
++checksum = "9ce6ccbdedbf6d6354471319e781c0dfef054c81fbc7cf83f338a4296c0cae11"
+ 
+ [[package]]
+ name = "windows_i686_msvc"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
++checksum = "581fee95406bb13382d2f65cd4a908ca7b1e4c2f1917f143ba16efe98a589b5d"
+ 
+ [[package]]
+ name = "windows_x86_64_gnu"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
++checksum = "2e55b5ac9ea33f2fc1716d1742db15574fd6fc8dadc51caab1c16a3d3b4190ba"
+ 
+ [[package]]
+ name = "windows_x86_64_gnullvm"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
++checksum = "0a6e035dd0599267ce1ee132e51c27dd29437f63325753051e71dd9e42406c57"
+ 
+ [[package]]
+ name = "windows_x86_64_msvc"
+-version = "0.52.6"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
++checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
+diff --git a/library/panic_unwind/src/lib.rs b/library/panic_unwind/src/lib.rs
+index 83311f32380..305e0143533 100644
+--- a/library/panic_unwind/src/lib.rs
++++ b/library/panic_unwind/src/lib.rs
+@@ -43,11 +43,6 @@
+         #[path = "hermit.rs"]
+         mod imp;
+     }
+-    target_os = "l4re" => {
+-        // L4Re is unix family but does not yet support unwinding.
+-        #[path = "dummy.rs"]
+-        mod imp;
+-    }
+     any(
+         all(target_family = "windows", target_env = "gnu"),
+         target_os = "psp",
+diff --git a/library/std/src/collections/hash/map/tests.rs b/library/std/src/collections/hash/map/tests.rs
+index 9f7df20a1d7..65af8a0f6a2 100644
+--- a/library/std/src/collections/hash/map/tests.rs
++++ b/library/std/src/collections/hash/map/tests.rs
+@@ -834,6 +834,11 @@ fn test_try_reserve() {
+         Err(CapacityOverflow),
+         "usize::MAX should trigger an overflow!"
+     );
++    println!("--------------------------> before test");
++
++    let _ = empty_bytes.try_reserve(MAX_USIZE / 16);
++
++    println!("--------------------------> after test");
+ 
+     if let Err(AllocError { .. }) = empty_bytes.try_reserve(MAX_USIZE / 16).map_err(|e| e.kind()) {
+     } else {
+diff --git a/library/std/src/os/fd/mod.rs b/library/std/src/os/fd/mod.rs
+index 95cf4932e6e..4ec9d0d5c57 100644
+--- a/library/std/src/os/fd/mod.rs
++++ b/library/std/src/os/fd/mod.rs
+@@ -13,7 +13,7 @@
+ mod owned;
+ 
+ // Implementations for `AsRawFd` etc. for network types.
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ mod net;
+ 
+ #[cfg(test)]
+diff --git a/library/std/src/os/fd/owned.rs b/library/std/src/os/fd/owned.rs
+index 10e1e73a115..b4744dba2d3 100644
+--- a/library/std/src/os/fd/owned.rs
++++ b/library/std/src/os/fd/owned.rs
+@@ -318,7 +318,7 @@ fn from(owned_fd: OwnedFd) -> Self {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl AsFd for crate::net::TcpStream {
+     #[inline]
+     fn as_fd(&self) -> BorrowedFd<'_> {
+@@ -327,7 +327,7 @@ fn as_fd(&self) -> BorrowedFd<'_> {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<crate::net::TcpStream> for OwnedFd {
+     /// Takes ownership of a [`TcpStream`](crate::net::TcpStream)'s socket file descriptor.
+     #[inline]
+@@ -337,7 +337,7 @@ fn from(tcp_stream: crate::net::TcpStream) -> OwnedFd {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<OwnedFd> for crate::net::TcpStream {
+     #[inline]
+     fn from(owned_fd: OwnedFd) -> Self {
+@@ -348,7 +348,7 @@ fn from(owned_fd: OwnedFd) -> Self {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl AsFd for crate::net::TcpListener {
+     #[inline]
+     fn as_fd(&self) -> BorrowedFd<'_> {
+@@ -357,7 +357,7 @@ fn as_fd(&self) -> BorrowedFd<'_> {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<crate::net::TcpListener> for OwnedFd {
+     /// Takes ownership of a [`TcpListener`](crate::net::TcpListener)'s socket file descriptor.
+     #[inline]
+@@ -367,7 +367,7 @@ fn from(tcp_listener: crate::net::TcpListener) -> OwnedFd {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<OwnedFd> for crate::net::TcpListener {
+     #[inline]
+     fn from(owned_fd: OwnedFd) -> Self {
+@@ -378,7 +378,7 @@ fn from(owned_fd: OwnedFd) -> Self {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl AsFd for crate::net::UdpSocket {
+     #[inline]
+     fn as_fd(&self) -> BorrowedFd<'_> {
+@@ -387,7 +387,7 @@ fn as_fd(&self) -> BorrowedFd<'_> {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<crate::net::UdpSocket> for OwnedFd {
+     /// Takes ownership of a [`UdpSocket`](crate::net::UdpSocket)'s file descriptor.
+     #[inline]
+@@ -397,7 +397,7 @@ fn from(udp_socket: crate::net::UdpSocket) -> OwnedFd {
+ }
+ 
+ #[stable(feature = "io_safety", since = "1.63.0")]
+-#[cfg(not(target_os = "trusty"))]
++#[cfg(not(any(target_os = "trusty", target_os = "l4re")))]
+ impl From<OwnedFd> for crate::net::UdpSocket {
+     #[inline]
+     fn from(owned_fd: OwnedFd) -> Self {
+diff --git a/library/std/src/os/l4re/fs.rs b/library/std/src/os/l4re/fs.rs
+index 0511ddcf19a..35a33e8a9fd 100644
+--- a/library/std/src/os/l4re/fs.rs
++++ b/library/std/src/os/l4re/fs.rs
+@@ -116,7 +116,6 @@ pub trait MetadataExt {
+     /// ```no_run
+     /// use std::fs;
+     /// use std::io;
+-    /// use std::os::linux::fs::MetadataExt;
+     ///
+     /// fn main() -> io::Result<()> {
+     ///     let meta = fs::metadata("some_file")?;
+@@ -328,7 +327,7 @@ pub trait MetadataExt {
+ impl MetadataExt for Metadata {
+     #[allow(deprecated)]
+     fn as_raw_stat(&self) -> &raw::stat {
+-        unsafe { &*(self.as_inner().as_inner() as *const libc::stat64 as *const raw::stat) }
++        panic!("as_raw_stat not supported for L4Re");
+     }
+     fn st_dev(&self) -> u64 {
+         self.as_inner().as_inner().st_dev as u64
+@@ -355,22 +354,22 @@ fn st_size(&self) -> u64 {
+         self.as_inner().as_inner().st_size as u64
+     }
+     fn st_atime(&self) -> i64 {
+-        self.as_inner().as_inner().st_atime as i64
++        self.as_inner().as_inner().st_atim.tv_sec as i64
+     }
+     fn st_atime_nsec(&self) -> i64 {
+-        self.as_inner().as_inner().st_atime_nsec as i64
++        self.as_inner().as_inner().st_atim.tv_nsec as i64
+     }
+     fn st_mtime(&self) -> i64 {
+-        self.as_inner().as_inner().st_mtime as i64
++        self.as_inner().as_inner().st_mtim.tv_sec as i64
+     }
+     fn st_mtime_nsec(&self) -> i64 {
+-        self.as_inner().as_inner().st_mtime_nsec as i64
++        self.as_inner().as_inner().st_mtim.tv_nsec as i64
+     }
+     fn st_ctime(&self) -> i64 {
+-        self.as_inner().as_inner().st_ctime as i64
++        self.as_inner().as_inner().st_ctim.tv_sec as i64
+     }
+     fn st_ctime_nsec(&self) -> i64 {
+-        self.as_inner().as_inner().st_ctime_nsec as i64
++            self.as_inner().as_inner().st_ctim.tv_nsec as i64
+     }
+     fn st_blksize(&self) -> u64 {
+         self.as_inner().as_inner().st_blksize as u64
+diff --git a/library/std/src/os/l4re/raw.rs b/library/std/src/os/l4re/raw.rs
+index 8fb6e99ecfa..f41fff015ca 100644
+--- a/library/std/src/os/l4re/raw.rs
++++ b/library/std/src/os/l4re/raw.rs
+@@ -10,355 +10,14 @@
+ )]
+ #![allow(deprecated)]
+ 
+-use crate::os::raw::c_ulong;
+-
+ #[stable(feature = "raw_ext", since = "1.1.0")]
+-pub type dev_t = u64;
++pub type dev_t = libc::dev_t;
+ #[stable(feature = "raw_ext", since = "1.1.0")]
+-pub type mode_t = u32;
++pub type mode_t = libc::mode_t;
+ 
+ #[stable(feature = "pthread_t", since = "1.8.0")]
+-pub type pthread_t = c_ulong;
++pub type pthread_t = libc::pthread_t;
+ 
+ #[doc(inline)]
+ #[stable(feature = "raw_ext", since = "1.1.0")]
+-pub use self::arch::{blkcnt_t, blksize_t, ino_t, nlink_t, off_t, stat, time_t};
+-
+-#[cfg(any(
+-    target_arch = "x86",
+-    target_arch = "m68k",
+-    target_arch = "csky",
+-    target_arch = "powerpc",
+-    target_arch = "sparc",
+-    target_arch = "arm",
+-    target_arch = "wasm32"
+-))]
+-mod arch {
+-    use crate::os::raw::{c_long, c_short, c_uint};
+-
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blksize_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type nlink_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type time_t = i64;
+-
+-    #[repr(C)]
+-    #[derive(Clone)]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub struct stat {
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_dev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad1: c_short,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __st_ino: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mode: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_nlink: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_uid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_gid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_rdev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad2: c_uint,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_size: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blksize: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blocks: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ino: u64,
+-    }
+-}
+-
+-#[cfg(target_arch = "mips")]
+-mod arch {
+-    use crate::os::raw::{c_long, c_ulong};
+-
+-    #[cfg(target_env = "musl")]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = i64;
+-    #[cfg(not(target_env = "musl"))]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blksize_t = u64;
+-    #[cfg(target_env = "musl")]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[cfg(not(target_env = "musl"))]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type nlink_t = u64;
+-    #[cfg(target_env = "musl")]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = u64;
+-    #[cfg(not(target_env = "musl"))]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type time_t = i64;
+-
+-    #[repr(C)]
+-    #[derive(Clone)]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub struct stat {
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_dev: c_ulong,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_pad1: [c_long; 3],
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ino: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mode: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_nlink: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_uid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_gid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_rdev: c_ulong,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_pad2: [c_long; 2],
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_size: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blksize: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blocks: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_pad5: [c_long; 14],
+-    }
+-}
+-
+-#[cfg(target_arch = "hexagon")]
+-mod arch {
+-    use crate::os::raw::{c_int, c_long, c_uint};
+-
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = i64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blksize_t = c_long;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type nlink_t = c_uint;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = i64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type time_t = i64;
+-
+-    #[repr(C)]
+-    #[derive(Clone)]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub struct stat {
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_dev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ino: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mode: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_nlink: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_uid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_gid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_rdev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad1: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_size: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blksize: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad2: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blocks: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad3: [c_int; 2],
+-    }
+-}
+-
+-#[cfg(any(
+-    target_arch = "mips64",
+-    target_arch = "s390x",
+-    target_arch = "sparc64",
+-    target_arch = "riscv64",
+-    target_arch = "riscv32"
+-))]
+-mod arch {
+-    pub use libc::{blkcnt_t, blksize_t, ino_t, nlink_t, off_t, stat, time_t};
+-}
+-
+-#[cfg(target_arch = "aarch64")]
+-mod arch {
+-    use crate::os::raw::{c_int, c_long};
+-
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = i64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blksize_t = i32;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type nlink_t = u32;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = i64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type time_t = c_long;
+-
+-    #[repr(C)]
+-    #[derive(Clone)]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub struct stat {
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_dev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ino: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mode: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_nlink: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_uid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_gid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_rdev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad1: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_size: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blksize: i32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad2: c_int,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blocks: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime: time_t,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime: time_t,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime: time_t,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __unused: [c_int; 2],
+-    }
+-}
+-
+-#[cfg(any(target_arch = "x86_64", target_arch = "powerpc64"))]
+-mod arch {
+-    use crate::os::raw::{c_int, c_long};
+-
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blkcnt_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type blksize_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type ino_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type nlink_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type off_t = u64;
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub type time_t = i64;
+-
+-    #[repr(C)]
+-    #[derive(Clone)]
+-    #[stable(feature = "raw_ext", since = "1.1.0")]
+-    pub struct stat {
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_dev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ino: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_nlink: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mode: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_uid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_gid: u32,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __pad0: c_int,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_rdev: u64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_size: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blksize: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_blocks: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_atime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_mtime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime: i64,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub st_ctime_nsec: c_long,
+-        #[stable(feature = "raw_ext", since = "1.1.0")]
+-        pub __unused: [c_long; 3],
+-    }
+-}
++pub use libc::{blkcnt_t, blksize_t, ino_t, nlink_t, off_t, stat, time_t};
+diff --git a/library/std/src/os/unix/mod.rs b/library/std/src/os/unix/mod.rs
+index 78c957270c4..2c418e59f77 100644
+--- a/library/std/src/os/unix/mod.rs
++++ b/library/std/src/os/unix/mod.rs
+@@ -90,6 +90,7 @@ mod platform {
+ pub mod ffi;
+ pub mod fs;
+ pub mod io;
++#[cfg(not(target_os = "l4re"))]
+ pub mod net;
+ pub mod process;
+ pub mod raw;
+diff --git a/library/std/src/sys/fd/unix.rs b/library/std/src/sys/fd/unix.rs
+index a12f692e754..83ecc989dee 100644
+--- a/library/std/src/sys/fd/unix.rs
++++ b/library/std/src/sys/fd/unix.rs
+@@ -151,13 +151,15 @@ pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+         #[cfg(not(any(
+             all(target_os = "linux", not(target_env = "musl")),
+             target_os = "android",
+-            target_os = "hurd"
++            target_os = "hurd",
++            target_os = "l4re"
+         )))]
+         use libc::pread as pread64;
+         #[cfg(any(
+             all(target_os = "linux", not(target_env = "musl")),
+             target_os = "android",
+-            target_os = "hurd"
++            target_os = "hurd",
++            target_os = "l4re"
+         ))]
+         use libc::pread64;
+ 
+@@ -374,13 +376,15 @@ pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
+         #[cfg(not(any(
+             all(target_os = "linux", not(target_env = "musl")),
+             target_os = "android",
+-            target_os = "hurd"
++            target_os = "hurd",
++            target_os = "l4re"
+         )))]
+         use libc::pwrite as pwrite64;
+         #[cfg(any(
+             all(target_os = "linux", not(target_env = "musl")),
+             target_os = "android",
+-            target_os = "hurd"
++            target_os = "hurd",
++            target_os = "l4re"
+         ))]
+         use libc::pwrite64;
+ 
+diff --git a/library/std/src/sys/fs/unix.rs b/library/std/src/sys/fs/unix.rs
+index 0d710a4b2a6..eaefe76a7c3 100644
+--- a/library/std/src/sys/fs/unix.rs
++++ b/library/std/src/sys/fs/unix.rs
+@@ -29,6 +29,7 @@
+     target_os = "aix",
+     target_os = "nto",
+     target_os = "vita",
++    target_os = "l4re",
+     all(target_os = "linux", target_env = "musl"),
+ ))]
+ use libc::readdir as readdir64;
+@@ -48,8 +49,6 @@
+ use libc::readdir_r as readdir64_r;
+ #[cfg(any(all(target_os = "linux", not(target_env = "musl")), target_os = "hurd"))]
+ use libc::readdir64;
+-#[cfg(target_os = "l4re")]
+-use libc::readdir64_r;
+ use libc::{c_int, mode_t};
+ #[cfg(target_os = "android")]
+ use libc::{
+@@ -58,7 +57,6 @@
+ };
+ #[cfg(not(any(
+     all(target_os = "linux", not(target_env = "musl")),
+-    target_os = "l4re",
+     target_os = "android",
+     target_os = "hurd",
+ )))]
+@@ -68,7 +66,6 @@
+ };
+ #[cfg(any(
+     all(target_os = "linux", not(target_env = "musl")),
+-    target_os = "l4re",
+     target_os = "hurd"
+ ))]
+ use libc::{dirent64, fstat64, ftruncate64, lseek64, lstat64, off64_t, open64, stat64};
+@@ -281,6 +278,7 @@ unsafe impl Sync for Dir {}
+     target_os = "nto",
+     target_os = "vita",
+     target_os = "hurd",
++    target_os = "l4re",
+ ))]
+ pub struct DirEntry {
+     dir: Arc<InnerReadDir>,
+@@ -305,6 +303,7 @@ pub struct DirEntry {
+     target_os = "nto",
+     target_os = "vita",
+     target_os = "hurd",
++    target_os = "l4re",
+ ))]
+ struct dirent64_min {
+     d_ino: u64,
+@@ -329,6 +328,7 @@ struct dirent64_min {
+     target_os = "nto",
+     target_os = "vita",
+     target_os = "hurd",
++    target_os = "l4re",
+ )))]
+ pub struct DirEntry {
+     dir: Arc<InnerReadDir>,
+@@ -474,7 +474,7 @@ pub fn created(&self) -> io::Result<SystemTime> {
+     }
+ }
+ 
+-#[cfg(not(any(target_os = "netbsd", target_os = "nto", target_os = "aix")))]
++#[cfg(not(any(target_os = "netbsd", target_os = "nto", target_os = "l4re", target_os = "aix")))]
+ impl FileAttr {
+     #[cfg(not(any(
+         target_os = "vxworks",
+@@ -589,7 +589,7 @@ pub fn created(&self) -> io::Result<SystemTime> {
+     }
+ }
+ 
+-#[cfg(target_os = "nto")]
++#[cfg(any(target_os = "nto", target_os = "l4re"))]
+ impl FileAttr {
+     pub fn modified(&self) -> io::Result<SystemTime> {
+         SystemTime::new(self.stat.st_mtim.tv_sec, self.stat.st_mtim.tv_nsec)
+@@ -708,6 +708,7 @@ impl Iterator for ReadDir {
+         target_os = "nto",
+         target_os = "vita",
+         target_os = "hurd",
++        target_os = "l4re",
+     ))]
+     fn next(&mut self) -> Option<io::Result<DirEntry>> {
+         use crate::sys::os::{errno, set_errno};
+@@ -801,6 +802,7 @@ fn next(&mut self) -> Option<io::Result<DirEntry>> {
+         target_os = "nto",
+         target_os = "vita",
+         target_os = "hurd",
++        target_os = "l4re",
+     )))]
+     fn next(&mut self) -> Option<io::Result<DirEntry>> {
+         if self.end_of_stream {
+@@ -1049,6 +1051,7 @@ fn name_bytes(&self) -> &[u8] {
+         target_os = "nto",
+         target_os = "vita",
+         target_os = "hurd",
++        target_os = "l4re",
+     )))]
+     fn name_cstr(&self) -> &CStr {
+         unsafe { CStr::from_ptr(self.entry.d_name.as_ptr()) }
+@@ -1064,6 +1067,7 @@ fn name_cstr(&self) -> &CStr {
+         target_os = "nto",
+         target_os = "vita",
+         target_os = "hurd",
++        target_os = "l4re",
+     ))]
+     fn name_cstr(&self) -> &CStr {
+         &self.name
+@@ -1238,6 +1242,7 @@ unsafe fn os_datasync(fd: c_int) -> c_int {
+             target_os = "openbsd",
+             target_os = "nto",
+             target_os = "hurd",
++            target_os = "l4re",
+         ))]
+         unsafe fn os_datasync(fd: c_int) -> c_int {
+             libc::fdatasync(fd)
+@@ -1252,6 +1257,7 @@ unsafe fn os_datasync(fd: c_int) -> c_int {
+             target_os = "openbsd",
+             target_os = "nto",
+             target_os = "hurd",
++            target_os = "l4re",
+             target_vendor = "apple",
+         )))]
+         unsafe fn os_datasync(fd: c_int) -> c_int {
+@@ -1266,6 +1272,7 @@ unsafe fn os_datasync(fd: c_int) -> c_int {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     ))]
+     pub fn lock(&self) -> io::Result<()> {
+@@ -1280,6 +1287,7 @@ pub fn lock(&self) -> io::Result<()> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     )))]
+     pub fn lock(&self) -> io::Result<()> {
+@@ -1293,6 +1301,7 @@ pub fn lock(&self) -> io::Result<()> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     ))]
+     pub fn lock_shared(&self) -> io::Result<()> {
+@@ -1307,6 +1316,7 @@ pub fn lock_shared(&self) -> io::Result<()> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     )))]
+     pub fn lock_shared(&self) -> io::Result<()> {
+@@ -1320,6 +1330,7 @@ pub fn lock_shared(&self) -> io::Result<()> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     ))]
+     pub fn try_lock(&self) -> Result<(), TryLockError> {
+@@ -1342,6 +1353,7 @@ pub fn try_lock(&self) -> Result<(), TryLockError> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     )))]
+     pub fn try_lock(&self) -> Result<(), TryLockError> {
+@@ -1358,6 +1370,7 @@ pub fn try_lock(&self) -> Result<(), TryLockError> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     ))]
+     pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
+@@ -1380,6 +1393,7 @@ pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     )))]
+     pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
+@@ -1396,6 +1410,7 @@ pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     ))]
+     pub fn unlock(&self) -> io::Result<()> {
+@@ -1410,6 +1425,7 @@ pub fn unlock(&self) -> io::Result<()> {
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "cygwin",
++        target_os = "l4re",
+         target_vendor = "apple",
+     )))]
+     pub fn unlock(&self) -> io::Result<()> {
+@@ -1513,6 +1529,7 @@ pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+             target_os = "espidf",
+             target_os = "horizon",
+             target_os = "nuttx",
++            target_os = "l4re"
+         )))]
+         let to_timespec = |time: Option<SystemTime>| match time {
+             Some(time) if let Some(ts) = time.t.to_timespec() => Ok(ts),
+@@ -1527,7 +1544,7 @@ pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
+             None => Ok(libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT as _ }),
+         };
+         cfg_select! {
+-            any(target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx") => {
++            any(target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx", target_os = "l4re") => {
+                 // Redox doesn't appear to support `UTIME_OMIT`.
+                 // ESP-IDF and HorizonOS do not support `futimens` at all and the behavior for those OS is therefore
+                 // the same as for Redox.
+@@ -1910,7 +1927,7 @@ pub fn symlink(original: &CStr, link: &CStr) -> io::Result<()> {
+ 
+ pub fn link(original: &CStr, link: &CStr) -> io::Result<()> {
+     cfg_select! {
+-        any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf", target_os = "horizon", target_os = "vita", target_env = "nto70") => {
++        any(target_os = "vxworks", target_os = "redox", target_os = "android", target_os = "espidf", target_os = "horizon", target_os = "vita", target_os = "l4re", target_env = "nto70") => {
+             // VxWorks, Redox and ESP-IDF lack `linkat`, so use `link` instead. POSIX leaves
+             // it implementation-defined whether `link` follows symlinks, so rely on the
+             // `symlink_hard_link` test in library/std/src/fs/tests.rs to check the behavior.
+@@ -2197,6 +2214,7 @@ pub fn mkfifo(path: &Path, mode: u32) -> io::Result<()> {
+     target_os = "vita",
+     target_os = "nto",
+     target_os = "vxworks",
++    target_os = "l4re",
+     miri
+ ))]
+ mod remove_dir_impl {
+@@ -2211,6 +2229,7 @@ mod remove_dir_impl {
+     target_os = "vita",
+     target_os = "nto",
+     target_os = "vxworks",
++    target_os = "l4re",
+     miri
+ )))]
+ mod remove_dir_impl {
+diff --git a/library/std/src/sys/net/connection/unsupported.rs b/library/std/src/sys/net/connection/unsupported.rs
+index da217439626..8d20479f217 100644
+--- a/library/std/src/sys/net/connection/unsupported.rs
++++ b/library/std/src/sys/net/connection/unsupported.rs
+@@ -1,7 +1,7 @@
+ use crate::fmt;
+ use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
+ use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
+-use crate::sys::unsupported;
++use crate::sys::unsupported::unsupported;
+ use crate::time::Duration;
+ 
+ pub struct TcpStream(!);
+diff --git a/library/std/src/sys/pal/unix/mod.rs b/library/std/src/sys/pal/unix/mod.rs
+index 400128acf12..10375e7867c 100644
+--- a/library/std/src/sys/pal/unix/mod.rs
++++ b/library/std/src/sys/pal/unix/mod.rs
+@@ -158,6 +158,7 @@ unsafe fn reset_sigpipe(#[allow(unused_variables)] sigpipe: u8) {
+             target_os = "horizon",
+             target_os = "vxworks",
+             target_os = "vita",
++            target_os = "l4re",
+             // Unikraft's `signal` implementation is currently broken:
+             // https://github.com/unikraft/lib-musl/issues/57
+             target_vendor = "unikraft",
+@@ -274,6 +275,7 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
+         libc::ETIMEDOUT => TimedOut,
+         libc::ETXTBSY => ExecutableFileBusy,
+         libc::EXDEV => CrossesDevices,
++        #[cfg(not(target_os = "l4re"))]
+         libc::EINPROGRESS => InProgress,
+         libc::EOPNOTSUPP => Unsupported,
+ 
+@@ -432,7 +434,7 @@ pub fn abort_internal() -> ! {
+     _ => {}
+ }
+ 
+-#[cfg(any(target_os = "espidf", target_os = "horizon", target_os = "vita", target_os = "nuttx"))]
++#[cfg(any(target_os = "espidf", target_os = "horizon", target_os = "vita", target_os = "nuttx", target_os = "l4re"))]
+ pub mod unsupported {
+     use crate::io;
+ 
+diff --git a/library/std/src/sys/pal/unix/os.rs b/library/std/src/sys/pal/unix/os.rs
+index 81275afa707..2cdbea639d4 100644
+--- a/library/std/src/sys/pal/unix/os.rs
++++ b/library/std/src/sys/pal/unix/os.rs
+@@ -120,6 +120,7 @@ pub fn error_string(errno: i32) -> String {
+             all(
+                 any(
+                     target_os = "linux",
++                    target_os = "l4re",
+                     target_os = "hurd",
+                     target_env = "newlib",
+                     target_os = "cygwin"
+@@ -136,7 +137,7 @@ pub fn error_string(errno: i32) -> String {
+     let p = buf.as_mut_ptr();
+     unsafe {
+         if strerror_r(errno as c_int, p, buf.len()) < 0 {
+-            panic!("strerror_r failure");
++            panic!("strerror_r failure. errno: {errno}, p: {:?}, buf: {:?}", p, buf);
+         }
+ 
+         let p = p as *const _;
+diff --git a/library/std/src/sys/personality/mod.rs b/library/std/src/sys/personality/mod.rs
+index 158e44e1764..7c683e3d1ce 100644
+--- a/library/std/src/sys/personality/mod.rs
++++ b/library/std/src/sys/personality/mod.rs
+@@ -33,7 +33,7 @@ fn rust_eh_personality() {
+         target_os = "psp",
+         target_os = "xous",
+         target_os = "solid_asp3",
+-        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "nuttx")),
++        all(target_family = "unix", not(target_os = "espidf"), not(target_os = "nuttx")),
+         all(target_vendor = "fortanix", target_env = "sgx"),
+     ) => {
+         mod gcc;
+diff --git a/library/std/src/sys/process/unix/unix.rs b/library/std/src/sys/process/unix/unix.rs
+index 11d48878727..ef5a04a572e 100644
+--- a/library/std/src/sys/process/unix/unix.rs
++++ b/library/std/src/sys/process/unix/unix.rs
+@@ -1,7 +1,7 @@
+ #[cfg(target_os = "vxworks")]
+ use libc::RTP_ID as pid_t;
+ #[cfg(not(target_os = "vxworks"))]
+-use libc::{c_int, pid_t};
++use libc::{c_char, c_int, pid_t};
+ #[cfg(not(any(
+     target_os = "vxworks",
+     target_os = "l4re",
+@@ -404,7 +404,7 @@ fn drop(&mut self) {
+             *sys::env::environ() = envp.as_ptr();
+         }
+ 
+-        libc::execvp(self.get_program_cstr().as_ptr(), self.get_argv().as_ptr());
++        libc::execvp(self.get_program_cstr().as_ptr(), self.get_argv().as_ptr() as *const *mut c_char);
+         Err(io::Error::last_os_error())
+     }
+ 
+diff --git a/library/std/src/sys/random/mod.rs b/library/std/src/sys/random/mod.rs
+index a7fbae86099..4b7dd4d9bb8 100644
+--- a/library/std/src/sys/random/mod.rs
++++ b/library/std/src/sys/random/mod.rs
+@@ -52,7 +52,6 @@
+     any(
+         target_os = "aix",
+         target_os = "hurd",
+-        target_os = "l4re",
+         target_os = "nto",
+     ) => {
+         mod unix_legacy;
+@@ -97,6 +96,7 @@
+     any(
+         all(target_family = "wasm", target_os = "unknown"),
+         target_os = "xous",
++        target_os = "l4re",
+     ) => {
+         // FIXME: finally remove std support for wasm32-unknown-unknown
+         // FIXME: add random data generation to xous
+@@ -111,6 +111,7 @@
+     target_os = "android",
+     all(target_family = "wasm", target_os = "unknown"),
+     target_os = "xous",
++    target_os = "l4re",
+ )))]
+ pub fn hashmap_random_keys() -> (u64, u64) {
+     let mut buf = [0; 16];
+diff --git a/library/unwind/src/lib.rs b/library/unwind/src/lib.rs
+index cd3a2f33ffa..14fd53050a7 100644
+--- a/library/unwind/src/lib.rs
++++ b/library/unwind/src/lib.rs
+@@ -21,7 +21,6 @@
+         // Windows MSVC no extra unwinder support needed
+     }
+     any(
+-        target_os = "l4re",
+         target_os = "none",
+         target_os = "espidf",
+         target_os = "nuttx",
+@@ -33,6 +32,7 @@
+         windows,
+         target_os = "psp",
+         target_os = "solid_asp3",
++        target_os = "l4re",
+         all(target_vendor = "fortanix", target_env = "sgx"),
+     ) => {
+         mod libunwind;
+diff --git a/src/bootstrap/Cargo.lock b/src/bootstrap/Cargo.lock
+index be29e77e572..834cb30eb7a 100644
+--- a/src/bootstrap/Cargo.lock
++++ b/src/bootstrap/Cargo.lock
+@@ -13,9 +13,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "anstyle"
+-version = "1.0.10"
++version = "1.0.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "55cc3b69f167a1ef2e161439aa98aed94e6028e5f9a59be9a6ffb47aef1651f9"
++checksum = "862ed96ca487e809f1c8e5a8447f6ee2cf102f846893800b20cebdf541fc6bbd"
+ 
+ [[package]]
+ name = "autocfg"
+@@ -25,9 +25,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+ 
+ [[package]]
+ name = "bitflags"
+-version = "2.6.0"
++version = "2.9.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b048fb63fd8b5923fc5aa7b340d8e156aec7ec02f0c78fa8a6ddc2613f6f71de"
++checksum = "34efbcccd345379ca2868b2b2c9d3782e9cc58ba87bc7d79d5b53d9c9ae6f25d"
+ 
+ [[package]]
+ name = "block-buffer"
+@@ -76,12 +76,12 @@ dependencies = [
+ 
+ [[package]]
+ name = "bstr"
+-version = "1.10.0"
++version = "1.12.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "40723b8fb387abc38f4f4a37c09073622e41dd12327033091ef8950659e6dc0c"
++checksum = "234113d19d0d7d613b40e86fb654acf958910802bcceab913a4f9e7cda03b1a4"
+ dependencies = [
+  "memchr",
+- "regex-automata 0.4.9",
++ "regex-automata 0.4.10",
+  "serde",
+ ]
+ 
+@@ -104,9 +104,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "cfg-if"
+-version = "1.0.0"
++version = "1.0.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
++checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
+ 
+ [[package]]
+ name = "chrono"
+@@ -119,9 +119,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "clap"
+-version = "4.5.20"
++version = "4.5.46"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b97f376d85a664d5837dbae44bf546e6477a679ff6610010f17276f686d867e8"
++checksum = "2c5e4fcf9c21d2e544ca1ee9d8552de13019a42aa7dbf32747fa7aaf1df76e57"
+ dependencies = [
+  "clap_builder",
+  "clap_derive",
+@@ -129,9 +129,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "clap_builder"
+-version = "4.5.20"
++version = "4.5.46"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "19bc80abd44e4bed93ca373a0704ccbd1b710dc5749406201bb018272808dc54"
++checksum = "fecb53a0e6fcfb055f686001bc2e2592fa527efaf38dbe81a6a9563562e57d41"
+ dependencies = [
+  "anstyle",
+  "clap_lex",
+@@ -139,18 +139,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "clap_complete"
+-version = "4.5.37"
++version = "4.5.57"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "11611dca53440593f38e6b25ec629de50b14cdfa63adc0fb856115a2c6d97595"
++checksum = "4d9501bd3f5f09f7bbee01da9a511073ed30a80cd7a509f1214bb74eadea71ad"
+ dependencies = [
+  "clap",
+ ]
+ 
+ [[package]]
+ name = "clap_derive"
+-version = "4.5.18"
++version = "4.5.45"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4ac6a0c7b1a9e9a5186361f67dfa1b88213572f427fb9ab038efb2bd8c582dab"
++checksum = "14cb31bb0a7d536caef2639baa7fad459e15c3144efefa6dbd1c84562c4739f6"
+ dependencies = [
+  "heck",
+  "proc-macro2",
+@@ -160,9 +160,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "clap_lex"
+-version = "0.7.2"
++version = "0.7.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
++checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
+ 
+ [[package]]
+ name = "cmake"
+@@ -187,18 +187,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "cpufeatures"
+-version = "0.2.15"
++version = "0.2.17"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0ca741a962e1b0bff6d724a1a0958b686406e853bb14061f218562e1896f95e6"
++checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+ dependencies = [
+  "libc",
+ ]
+ 
+ [[package]]
+ name = "crossbeam-deque"
+-version = "0.8.5"
++version = "0.8.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "613f8cc01fe9cf1a3eb3d7f488fd2fa8388403e97039e2f73692932e291a770d"
++checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
+ dependencies = [
+  "crossbeam-epoch",
+  "crossbeam-utils",
+@@ -215,9 +215,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "crossbeam-utils"
+-version = "0.8.20"
++version = "0.8.21"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "22ec99545bb0ed0ea7bb9b8e1e9122ea386ff8a48c0922e43f36d45ab09e0e80"
++checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+ 
+ [[package]]
+ name = "crypto-common"
+@@ -253,12 +253,12 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+ 
+ [[package]]
+ name = "errno"
+-version = "0.3.11"
++version = "0.3.13"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "976dd42dc7e85965fe702eb8164f21f450704bdde31faefd6471dba214cb594e"
++checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
+ dependencies = [
+  "libc",
+- "windows-sys 0.59.0",
++ "windows-sys 0.60.2",
+ ]
+ 
+ [[package]]
+@@ -269,14 +269,14 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+ 
+ [[package]]
+ name = "filetime"
+-version = "0.2.25"
++version = "0.2.26"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "35c0522e981e68cbfa8c3f978441a5f34b30b96e146b33cd3359176b50fe8586"
++checksum = "bc0505cd1b6fa6580283f6bdf70a73fcf4aba1184038c90902b92b3dd0df63ed"
+ dependencies = [
+  "cfg-if",
+  "libc",
+  "libredox",
+- "windows-sys 0.59.0",
++ "windows-sys 0.60.2",
+ ]
+ 
+ [[package]]
+@@ -291,9 +291,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "getrandom"
+-version = "0.3.2"
++version = "0.3.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "73fea8450eea4bac3940448fb7ae50d91f034f941199fcd9d909a5a07aa455f0"
++checksum = "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
+ dependencies = [
+  "cfg-if",
+  "libc",
+@@ -303,15 +303,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "globset"
+-version = "0.4.15"
++version = "0.4.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "15f1ce686646e7f1e19bf7d5533fe443a45dbfb990e00629110797578b42fb19"
++checksum = "54a1028dfc5f5df5da8a56a73e6c153c9a9708ec57232470703592a3f18e49f5"
+ dependencies = [
+  "aho-corasick",
+  "bstr",
+  "log",
+- "regex-automata 0.4.9",
+- "regex-syntax 0.8.5",
++ "regex-automata 0.4.10",
++ "regex-syntax 0.8.6",
+ ]
+ 
+ [[package]]
+@@ -322,11 +322,11 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+ 
+ [[package]]
+ name = "home"
+-version = "0.5.9"
++version = "0.5.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
++checksum = "589533453244b0995c858700322199b2becb13b627df2851f64a2775d024abcf"
+ dependencies = [
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -339,7 +339,7 @@ dependencies = [
+  "globset",
+  "log",
+  "memchr",
+- "regex-automata 0.4.9",
++ "regex-automata 0.4.10",
+  "same-file",
+  "walkdir",
+  "winapi-util",
+@@ -358,9 +358,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "itoa"
+-version = "1.0.11"
++version = "1.0.15"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
++checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+ 
+ [[package]]
+ name = "junction"
+@@ -380,15 +380,15 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+ 
+ [[package]]
+ name = "libc"
+-version = "0.2.174"
++version = "0.2.175"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1171693293099992e19cddea4e8b849964e9846f4acee11b3948bcc337be8776"
++checksum = "6a82ae493e598baaea5209805c49bbf2ea7de956d50d7da0da1164f9c6d28543"
+ 
+ [[package]]
+ name = "libredox"
+-version = "0.1.3"
++version = "0.1.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c0ff37bd590ca25063e35af745c343cb7a0271906fb7b37e4813e8f79f00268d"
++checksum = "391290121bad3d37fbddad76d8f5d1c1c314cfc646d143d7e07a3086ddff0ce3"
+ dependencies = [
+  "bitflags",
+  "libc",
+@@ -397,15 +397,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "linux-raw-sys"
+-version = "0.9.3"
++version = "0.9.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fe7db12097d22ec582439daf8618b8fdd1a7bef6270e9af3b1ebcd30893cf413"
++checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
+ 
+ [[package]]
+ name = "log"
+-version = "0.4.22"
++version = "0.4.27"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
++checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+ 
+ [[package]]
+ name = "lzma-sys"
+@@ -429,9 +429,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "memchr"
+-version = "2.7.4"
++version = "2.7.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
++checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
+ 
+ [[package]]
+ name = "ntapi"
+@@ -482,18 +482,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "object"
+-version = "0.36.5"
++version = "0.36.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "aedf0a2d09c573ed1d8d85b30c119153926a2b36dce0ab28322c09a117a4683e"
++checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+ dependencies = [
+  "memchr",
+ ]
+ 
+ [[package]]
+ name = "once_cell"
+-version = "1.20.2"
++version = "1.21.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
++checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
+ 
+ [[package]]
+ name = "opener"
+@@ -519,9 +519,9 @@ checksum = "3b3cff922bd51709b605d9ead9aa71031d81447142d828eb4a6eba76fe619f9b"
+ 
+ [[package]]
+ name = "pkg-config"
+-version = "0.3.31"
++version = "0.3.32"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
++checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+ 
+ [[package]]
+ name = "pretty_assertions"
+@@ -535,47 +535,47 @@ dependencies = [
+ 
+ [[package]]
+ name = "proc-macro2"
+-version = "1.0.89"
++version = "1.0.101"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f139b0662de085916d1fb67d2b4169d1addddda1919e696f3252b740b629986e"
++checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
+ dependencies = [
+  "unicode-ident",
+ ]
+ 
+ [[package]]
+ name = "quote"
+-version = "1.0.37"
++version = "1.0.40"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b5b9d34b8991d19d98081b46eacdd8eb58c6f2b201139f7c5f643cc155a633af"
++checksum = "1885c039570dc00dcb4ff087a89e185fd56bae234ddc7f056a945bf36467248d"
+ dependencies = [
+  "proc-macro2",
+ ]
+ 
+ [[package]]
+ name = "r-efi"
+-version = "5.2.0"
++version = "5.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "74765f6d916ee2faa39bc8e68e4f3ed8949b48cccdac59983d287a7cb71ce9c5"
++checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+ 
+ [[package]]
+ name = "redox_syscall"
+-version = "0.5.7"
++version = "0.5.17"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9b6dfecf2c74bce2466cabf93f6664d6998a69eb21e39f4207930065b27b771f"
++checksum = "5407465600fb0548f1442edf71dd20683c6ed326200ace4b1ef0763521bb3b77"
+ dependencies = [
+  "bitflags",
+ ]
+ 
+ [[package]]
+ name = "regex"
+-version = "1.11.1"
++version = "1.11.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
++checksum = "23d7fd106d8c02486a8d64e778353d1cffe08ce79ac2e82f540c86d0facf6912"
+ dependencies = [
+  "aho-corasick",
+  "memchr",
+- "regex-automata 0.4.9",
+- "regex-syntax 0.8.5",
++ "regex-automata 0.4.10",
++ "regex-syntax 0.8.6",
+ ]
+ 
+ [[package]]
+@@ -589,13 +589,13 @@ dependencies = [
+ 
+ [[package]]
+ name = "regex-automata"
+-version = "0.4.9"
++version = "0.4.10"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
++checksum = "6b9458fa0bfeeac22b5ca447c63aaf45f28439a709ccd244698632f9aa6394d6"
+ dependencies = [
+  "aho-corasick",
+  "memchr",
+- "regex-syntax 0.8.5",
++ "regex-syntax 0.8.6",
+ ]
+ 
+ [[package]]
+@@ -606,28 +606,28 @@ checksum = "f162c6dd7b008981e4d40210aca20b4bd0f9b60ca9271061b07f78537722f2e1"
+ 
+ [[package]]
+ name = "regex-syntax"
+-version = "0.8.5"
++version = "0.8.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
++checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
+ 
+ [[package]]
+ name = "rustix"
+-version = "1.0.7"
++version = "1.0.8"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c71e83d6afe7ff64890ec6b71d6a69bb8a610ab78ce364b3352876bb4c801266"
++checksum = "11181fbabf243db407ef8df94a6ce0b2f9a733bd8be4ad02b4eda9602296cac8"
+ dependencies = [
+  "bitflags",
+  "errno",
+  "libc",
+  "linux-raw-sys",
+- "windows-sys 0.59.0",
++ "windows-sys 0.60.2",
+ ]
+ 
+ [[package]]
+ name = "ryu"
+-version = "1.0.18"
++version = "1.0.20"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
++checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+ 
+ [[package]]
+ name = "same-file"
+@@ -646,24 +646,24 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+ 
+ [[package]]
+ name = "semver"
+-version = "1.0.23"
++version = "1.0.26"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
++checksum = "56e6fa9c48d24d85fb3de5ad847117517440f6beceb7798af16b4a87d616b8d0"
+ 
+ [[package]]
+ name = "serde"
+-version = "1.0.215"
++version = "1.0.219"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6513c1ad0b11a9376da888e3e0baa0077f1aed55c17f50e7b2397136129fb88f"
++checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
+ dependencies = [
+  "serde_derive",
+ ]
+ 
+ [[package]]
+ name = "serde_derive"
+-version = "1.0.215"
++version = "1.0.219"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ad1e866f866923f252f05c889987993144fb74e722403468a4ebd70c3cd756c0"
++checksum = "5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -672,9 +672,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "serde_json"
+-version = "1.0.132"
++version = "1.0.143"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d726bfaff4b320266d395898905d0eba0345aae23b54aee3a737e260fd46db03"
++checksum = "d401abef1d108fbd9cbaebc3e46611f4b1021f714a0597a71f41ee463f5f4a5a"
+ dependencies = [
+  "itoa",
+  "memchr",
+@@ -684,9 +684,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "sha2"
+-version = "0.10.8"
++version = "0.10.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "793db75ad2bcafc3ffa7c68b215fee268f537982cd901d132f89c6343f3a3dc8"
++checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+ dependencies = [
+  "cfg-if",
+  "cpufeatures",
+@@ -716,15 +716,15 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+ 
+ [[package]]
+ name = "smallvec"
+-version = "1.13.2"
++version = "1.15.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
++checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+ 
+ [[package]]
+ name = "syn"
+-version = "2.0.87"
++version = "2.0.106"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "25aa4ce346d03a6dcd68dd8b4010bcb74e54e62c90c573f394c46eae99aba32d"
++checksum = "ede7c438028d4436d71104916910f5bb611972c5cfd7f89b8300a8186e6fada6"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -757,15 +757,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "tempfile"
+-version = "3.19.0"
++version = "3.21.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "488960f40a3fd53d72c2a29a58722561dee8afdd175bd88e3db4677d7b2ba600"
++checksum = "15b61f8f20e3a6f7e0649d825294eaf317edce30f82cf6026e7e4cb9222a7d1e"
+ dependencies = [
+  "fastrand",
+  "getrandom",
+  "once_cell",
+  "rustix",
+- "windows-sys 0.59.0",
++ "windows-sys 0.60.2",
+ ]
+ 
+ [[package]]
+@@ -779,12 +779,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "thread_local"
+-version = "1.1.8"
++version = "1.1.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8b9ef9bad013ada3808854ceac7b46812a6465ba368859a37e2100283d2d719c"
++checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+ dependencies = [
+  "cfg-if",
+- "once_cell",
+ ]
+ 
+ [[package]]
+@@ -809,9 +808,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "tracing-attributes"
+-version = "0.1.28"
++version = "0.1.30"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "395ae124c09f9e6918a2310af6038fba074bcf474ac352496d5910dd59a2226d"
++checksum = "81383ab64e72a7a8b8e13130c49e3dab29def6d0c7d76a03087b3cf71c5c6903"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -831,9 +830,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "tracing-core"
+-version = "0.1.33"
++version = "0.1.34"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c"
++checksum = "b9d12581f227e93f094d3af2ae690a574abb8a2b9b7a96e7cfe9647b2b617678"
+ dependencies = [
+  "once_cell",
+  "valuable",
+@@ -870,21 +869,21 @@ dependencies = [
+ 
+ [[package]]
+ name = "typenum"
+-version = "1.17.0"
++version = "1.18.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
++checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
+ 
+ [[package]]
+ name = "unicode-ident"
+-version = "1.0.13"
++version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e91b56cd4cadaeb79bbf1a5645f6b4f8dc5bde8834ad5894a8db35fda9efa1fe"
++checksum = "5a5f39404a5da50712a4c1eecf25e90dd62b613502b7e925fd4e4d19b5c96512"
+ 
+ [[package]]
+ name = "valuable"
+-version = "0.1.0"
++version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
++checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+ 
+ [[package]]
+ name = "version_check"
+@@ -904,11 +903,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "wasi"
+-version = "0.14.2+wasi-0.2.4"
++version = "0.14.3+wasi-0.2.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "9683f9a5a998d873c0d21fcbe3c083009670149a8fab228644b8bd36b2c48cb3"
++checksum = "6a51ae83037bdd272a9e28ce236db8c07016dd0d50c27038b3f407533c030c95"
+ dependencies = [
+- "wit-bindgen-rt",
++ "wit-bindgen",
+ ]
+ 
+ [[package]]
+@@ -929,11 +928,11 @@ checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+ 
+ [[package]]
+ name = "winapi-util"
+-version = "0.1.9"
++version = "0.1.10"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
++checksum = "0978bf7171b3d90bac376700cb56d606feb40f251a475a5d6634613564460b22"
+ dependencies = [
+- "windows-sys 0.59.0",
++ "windows-sys 0.60.2",
+ ]
+ 
+ [[package]]
+@@ -944,9 +943,9 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+ 
+ [[package]]
+ name = "windows"
+-version = "0.61.1"
++version = "0.61.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c5ee8f3d025738cb02bad7868bbb5f8a6327501e870bf51f1b455b0a2454a419"
++checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
+ dependencies = [
+  "windows-collections",
+  "windows-core",
+@@ -966,9 +965,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "windows-core"
+-version = "0.61.0"
++version = "0.61.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4763c1de310c86d75a878046489e2e5ba02c649d185f21c67d4cf8a56d098980"
++checksum = "c0fdd3ddb90610c7638aa2b3a3ab2904fb9e5cdbecc643ddb3647212781c4ae3"
+ dependencies = [
+  "windows-implement",
+  "windows-interface",
+@@ -979,12 +978,13 @@ dependencies = [
+ 
+ [[package]]
+ name = "windows-future"
+-version = "0.2.0"
++version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7a1d6bbefcb7b60acd19828e1bc965da6fcf18a7e39490c5f8be71e54a19ba32"
++checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
+ dependencies = [
+  "windows-core",
+  "windows-link",
++ "windows-threading",
+ ]
+ 
+ [[package]]
+@@ -1011,9 +1011,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "windows-link"
+-version = "0.1.1"
++version = "0.1.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "76840935b766e1b0a05c0066835fb9ec80071d4c09a16f6bd5f7e655e3c14c38"
++checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
+ 
+ [[package]]
+ name = "windows-numerics"
+@@ -1027,18 +1027,18 @@ dependencies = [
+ 
+ [[package]]
+ name = "windows-result"
+-version = "0.3.2"
++version = "0.3.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "c64fd11a4fd95df68efcfee5f44a294fe71b8bc6a91993e2791938abcc712252"
++checksum = "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
+ dependencies = [
+  "windows-link",
+ ]
+ 
+ [[package]]
+ name = "windows-strings"
+-version = "0.4.0"
++version = "0.4.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7a2ba9642430ee452d5a7aa78d72907ebe8cfda358e8cb7918a2050581322f97"
++checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
+ dependencies = [
+  "windows-link",
+ ]
+@@ -1049,7 +1049,7 @@ version = "0.52.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+ dependencies = [
+- "windows-targets",
++ "windows-targets 0.52.6",
+ ]
+ 
+ [[package]]
+@@ -1058,7 +1058,16 @@ version = "0.59.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+ dependencies = [
+- "windows-targets",
++ "windows-targets 0.52.6",
++]
++
++[[package]]
++name = "windows-sys"
++version = "0.60.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
++dependencies = [
++ "windows-targets 0.53.3",
+ ]
+ 
+ [[package]]
+@@ -1067,14 +1076,40 @@ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
+ dependencies = [
+- "windows_aarch64_gnullvm",
+- "windows_aarch64_msvc",
+- "windows_i686_gnu",
+- "windows_i686_gnullvm",
+- "windows_i686_msvc",
+- "windows_x86_64_gnu",
+- "windows_x86_64_gnullvm",
+- "windows_x86_64_msvc",
++ "windows_aarch64_gnullvm 0.52.6",
++ "windows_aarch64_msvc 0.52.6",
++ "windows_i686_gnu 0.52.6",
++ "windows_i686_gnullvm 0.52.6",
++ "windows_i686_msvc 0.52.6",
++ "windows_x86_64_gnu 0.52.6",
++ "windows_x86_64_gnullvm 0.52.6",
++ "windows_x86_64_msvc 0.52.6",
++]
++
++[[package]]
++name = "windows-targets"
++version = "0.53.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d5fe6031c4041849d7c496a8ded650796e7b6ecc19df1a431c1a363342e5dc91"
++dependencies = [
++ "windows-link",
++ "windows_aarch64_gnullvm 0.53.0",
++ "windows_aarch64_msvc 0.53.0",
++ "windows_i686_gnu 0.53.0",
++ "windows_i686_gnullvm 0.53.0",
++ "windows_i686_msvc 0.53.0",
++ "windows_x86_64_gnu 0.53.0",
++ "windows_x86_64_gnullvm 0.53.0",
++ "windows_x86_64_msvc 0.53.0",
++]
++
++[[package]]
++name = "windows-threading"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b66463ad2e0ea3bbf808b7f1d371311c80e115c0b71d60efc142cafbcfb057a6"
++dependencies = [
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -1083,42 +1118,84 @@ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
+ 
++[[package]]
++name = "windows_aarch64_gnullvm"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "86b8d5f90ddd19cb4a147a5fa63ca848db3df085e25fee3cc10b39b6eebae764"
++
+ [[package]]
+ name = "windows_aarch64_msvc"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+ 
++[[package]]
++name = "windows_aarch64_msvc"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c7651a1f62a11b8cbd5e0d42526e55f2c99886c77e007179efff86c2b137e66c"
++
+ [[package]]
+ name = "windows_i686_gnu"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
+ 
++[[package]]
++name = "windows_i686_gnu"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c1dc67659d35f387f5f6c479dc4e28f1d4bb90ddd1a5d3da2e5d97b42d6272c3"
++
+ [[package]]
+ name = "windows_i686_gnullvm"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
+ 
++[[package]]
++name = "windows_i686_gnullvm"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9ce6ccbdedbf6d6354471319e781c0dfef054c81fbc7cf83f338a4296c0cae11"
++
+ [[package]]
+ name = "windows_i686_msvc"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
+ 
++[[package]]
++name = "windows_i686_msvc"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "581fee95406bb13382d2f65cd4a908ca7b1e4c2f1917f143ba16efe98a589b5d"
++
+ [[package]]
+ name = "windows_x86_64_gnu"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
+ 
++[[package]]
++name = "windows_x86_64_gnu"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2e55b5ac9ea33f2fc1716d1742db15574fd6fc8dadc51caab1c16a3d3b4190ba"
++
+ [[package]]
+ name = "windows_x86_64_gnullvm"
+ version = "0.52.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
+ 
++[[package]]
++name = "windows_x86_64_gnullvm"
++version = "0.53.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0a6e035dd0599267ce1ee132e51c27dd29437f63325753051e71dd9e42406c57"
++
+ [[package]]
+ name = "windows_x86_64_msvc"
+ version = "0.52.6"
+@@ -1126,13 +1203,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+ 
+ [[package]]
+-name = "wit-bindgen-rt"
+-version = "0.39.0"
++name = "windows_x86_64_msvc"
++version = "0.53.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
+-dependencies = [
+- "bitflags",
+-]
++checksum = "271414315aff87387382ec3d271b52d7ae78726f5d44ac98b4f4030c91880486"
++
++[[package]]
++name = "wit-bindgen"
++version = "0.45.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "052283831dbae3d879dc7f51f3d92703a316ca49f91540417d38591826127814"
+ 
+ [[package]]
+ name = "xz2"
+diff --git a/src/bootstrap/src/core/sanity.rs b/src/bootstrap/src/core/sanity.rs
+index 099ec488397..7d75a4216c7 100644
+--- a/src/bootstrap/src/core/sanity.rs
++++ b/src/bootstrap/src/core/sanity.rs
+@@ -38,6 +38,9 @@ pub struct Finder {
+     // just a dummy comment so the list doesn't get onelined
+     "aarch64_be-unknown-hermit",
+     "aarch64_be-unknown-none-softfloat",
++    "aarch64-unknown-l4re-uclibc",
++    "armv7-unknown-l4re-uclibceabi",
++    "armv7-unknown-l4re-uclibceabihf"
+ ];
+ 
+ /// Minimum version threshold for libstdc++ required when using prebuilt LLVM
+diff --git a/src/bootstrap/src/utils/helpers.rs b/src/bootstrap/src/utils/helpers.rs
+index e802c0214dd..65a08f2fec5 100644
+--- a/src/bootstrap/src/utils/helpers.rs
++++ b/src/bootstrap/src/utils/helpers.rs
+@@ -222,7 +222,8 @@ pub fn use_host_linker(target: TargetSelection) -> bool {
+         || target.contains("fortanix")
+         || target.contains("fuchsia")
+         || target.contains("bpf")
+-        || target.contains("switch"))
++        || target.contains("switch")
++        || target.contains("l4re"))
+ }
+ 
+ pub fn target_supports_cranelift_backend(target: TargetSelection) -> bool {

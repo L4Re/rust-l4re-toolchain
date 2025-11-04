@@ -1,0 +1,29 @@
+From 891e21a7b4428f1337a18e4103401fe5db2517cf Mon Sep 17 00:00:00 2001
+From: Adam Lackorzynski <adam@l4re.org>
+Date: Sun, 2 Nov 2025 19:18:18 +0100
+Subject: [PATCH] sysroot: install libgcc-crt as well
+
+This includes a required crtbegin.o.
+
+Change-Id: I62e2c1d72f0a34cf9846123b1185084ab1f22bb1
+Signed-off-by: Adam Lackorzynski <adam@l4re.org>
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 6ba730c7..e3d30402 100644
+--- a/Makefile
++++ b/Makefile
+@@ -319,7 +319,7 @@ cleanup_include_dir:
+ 
+ # Build a typical sysroot for use with external tooling such as a
+ # L4Re-specific cross-compiler
+-SYSROOT_LIB_DIRS  = $(addprefix libc/uclibc-ng/,libc libm librt) ldscripts ldso
++SYSROOT_LIB_DIRS  = $(addprefix libc/uclibc-ng/,libc libm librt) ldscripts ldso libgcc-crt libgcc_eh
+ 
+ OUTPUT_FORMAT = $(CC) $(CFLAGS) -Wl,--verbose 2>&1 | $(SED) -n '/OUTPUT_FORMAT/,/)/p'
+ SYSROOT_PACKAGES = $(addprefix pkg/l4re-core/,ldso libc_backends libc)
+-- 
+2.51.0
+

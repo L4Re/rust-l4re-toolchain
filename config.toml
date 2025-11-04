@@ -1,0 +1,25 @@
+# Use different pre-set defaults than the global defaults.
+#
+# See `src/bootstrap/defaults` for more information.
+# Note that this has no default value (x.py uses the defaults in `config.example.toml`).
+#change-id = 129295
+profile = 'dist'
+
+[build]
+target = ["x86_64-unknown-linux-gnu", 'x86_64-unknown-l4re-uclibc', 'aarch64-unknown-l4re-uclibc']
+optimized-compiler-builtins = false
+docs = false
+verbose = 1
+
+[install]
+prefix = 'dist'
+# will land in dist/
+sysconfdir = 'etc/'
+
+[rust]
+debug = false
+strip = false
+incremental = true
+lto = "off"
+
+[dist]

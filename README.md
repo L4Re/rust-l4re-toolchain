@@ -4,7 +4,8 @@ Rust Toolchain for L4Re
 This builds the Rust compiler by taking the relevant Rust compiler components
 with a few L4Re adoptions.
 
-The current Rust version used is 1.86.0.
+This build works close to Rust upstream. PRs are open to include the patches
+from this repo into Rust's repositories.
 
 If you do not want the script to change your Rust environment, call:
 
