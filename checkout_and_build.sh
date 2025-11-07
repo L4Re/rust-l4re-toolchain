@@ -73,13 +73,13 @@ build_l4re()
 
 _EOF
 
-  git clone --depth 1 https://github.com/kernkonzept/mk l4
-  git clone --depth 1 https://github.com/kernkonzept/l4re-core l4/pkg/l4re-core
+  git clone --depth 1 https://github.com/l4re/mk l4
+  git clone --depth 1 https://github.com/l4re/l4re-core l4/pkg/l4re-core
 
   # we build more for testing, for the sysroot the above two are sufficient
-  git clone --depth 1 https://github.com/kernkonzept/bootstrap l4/pkg/bootstrap
-  git clone --depth 1 https://github.com/kernkonzept/drivers-frst l4/pkg/drivers-frst
-  git clone --depth 1 https://github.com/kernkonzept/libfdt l4/pkg/libfdt
+  git clone --depth 1 https://github.com/l4re/bootstrap l4/pkg/bootstrap
+  git clone --depth 1 https://github.com/l4re/drivers-frst l4/pkg/drivers-frst
+  git clone --depth 1 https://github.com/l4re/libfdt l4/pkg/libfdt
 
   p=$PWD
   (cd l4/pkg/l4re-core && patch -p 1 -i $p/l4re-core.patch)
@@ -115,7 +115,7 @@ _EOF
 build_kernel()
 {
   mkdir -p out
-  git -C out clone --depth 1 https://github.com/kernkonzept/fiasco
+  git -C out clone --depth 1 https://github.com/l4re/fiasco
   pushd out/fiasco
   make B=build-arm64 T=arm64-virt-el2
   make B=build-amd64 T=amd64-dfl
