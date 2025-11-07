@@ -29,7 +29,7 @@ init_rust()
 checkout_rust()
 {
   mkdir -p out
-  git -C out clone --reference /data/adam/rust https://github.com/rust-lang/rust.git
+  git -C out clone https://github.com/rust-lang/rust.git
   git -C out clone https://github.com/rust-lang/libc.git
 
   git -C out/rust checkout 41f2b6b39e7526a28d50ff6918dda6de48add5e4
