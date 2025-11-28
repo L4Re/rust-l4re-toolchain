@@ -83,9 +83,6 @@ _EOF
 
   p=$PWD
   (cd l4/pkg/l4re-core && patch -p 1 -i $p/l4re-core.patch)
-  if grep -qv libgcc-crt l4/Makefile; then
-    (cd l4 && patch -p 1 -i $SCRIPTDIR/patches/0001-sysroot-install-libgcc-crt-as-well.patch)
-  fi
 
   cp l4/mk/defconfig/config.amd64 defconfig-amd64
   echo "CONFIG_COMPILER_RT_USE_TOOLCHAIN_LIBGCC=n" >> defconfig-amd64
